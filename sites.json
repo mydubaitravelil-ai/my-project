@@ -1,0 +1,29 @@
+{
+  "sites": [
+    {
+      "name": "mydubai-travel",
+      "baseUrl": "https://mydubai-travel.com",
+      "criticalPaths": ["/"]
+    },
+    {
+      "name": "thailand-express",
+      "baseUrl": "https://thailand-express.com",
+      "criticalPaths": ["/"]
+    }
+  ],
+  "defaults": {
+    "maxCrawlPages": 60,
+    "maxExternalLinks": 80,
+    "auditPages": 8,
+    "budgets": {
+      "loadMs": 5000,
+      "ttfbMs": 800,
+      "fcpMs": 1800,
+      "lcpMs": 2500,
+      "cls": 0.1,
+      "pageWeightKb": 3000,
+      "requestCount": 120,
+      "imageKb": 400
+    }
+  }
+}

@@ -1,0 +1,204 @@
+name: QA Monster — site audit
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # daily 06:17 Israel time
+  workflow_dispatch:
+    inputs:
+      zap_mode:
+        description: 'OWASP ZAP scan: baseline (passive, safe), full (ACTIVE attack simulation — only on sites you own), none'
+        type: choice
+        options: [baseline, full, none]
+        default: baseline
+      site:
+        description: 'Only this site (name from sites.json); empty = all'
+        required: false
+        default: ''
+      fail_on:
+        description: 'Minimum severity that fails the run'
+        type: choice
+        options: [critical, high, medium, low]
+        default: high
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: qa-monster
+  cancel-in-progress: false
+
+env:
+  FAIL_ON: ${{ inputs.fail_on || 'high' }}
+  SITE: ${{ inputs.site }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.m.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: m
+        run: |
+          echo "matrix=$(jq -c --arg only "$SITE" '[.sites[] | select($only == "" or .name == $only) | {name, url: .baseUrl}]' sites.json)" >> "$GITHUB_OUTPUT"
+
+  playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run QA + security checks
+        run: npx playwright test
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pw-results
+          path: |
+            reports/
+            playwright-report/
+          retention-days: 30
+
+  zap:
+    needs: setup
+    if: ${{ (inputs.zap_mode || 'baseline') != 'none' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        site: ${{ fromJson(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: ZAP baseline scan (passive)
+        if: ${{ (inputs.zap_mode || 'baseline') == 'baseline' }}
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ matrix.site.url }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a -j -m 5'
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: zap-${{ matrix.site.name }}
+      - name: ZAP full scan (active)
+        if: ${{ inputs.zap_mode == 'full' }}
+        uses: zaproxy/action-full-scan@v0.12.0
+        with:
+          target: ${{ matrix.site.url }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a -j -m 10'
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: zap-${{ matrix.site.name }}
+
+  report:
+    needs: [playwright, zap]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+      REPORT_EMAIL: ${{ vars.REPORT_EMAIL }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: pw-results
+          path: .
+        continue-on-error: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zap-*
+          path: reports/zap
+        continue-on-error: true
+
+      - name: Restore previous run summary
+        uses: actions/cache/restore@v4
+        with:
+          path: .qa-history
+          key: qa-monster-history-${{ github.run_id }}
+          restore-keys: qa-monster-history-
+      - run: mkdir -p reports/previous && cp .qa-history/summary.json reports/previous/ 2>/dev/null || true
+
+      - name: Build graded report
+        id: build
+        run: |
+          node scripts/build-report.mjs
+          echo "blocking=$(jq .blocking reports/summary.json)" >> "$GITHUB_OUTPUT"
+          echo "grades=$(jq -r '[.sites[] | "\(.name): אבטחה \(.securityGrade) · QA \(.qaGrade)"] | join(" | ")' reports/summary.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Save history
+        run: mkdir -p .qa-history && cp reports/summary.json .qa-history/
+      - uses: actions/cache/save@v4
+        with:
+          path: .qa-history
+          key: qa-monster-history-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qa-monster-report
+          path: |
+            reports/report.html
+            reports/summary.md
+            reports/summary.json
+            playwright-report/
+          retention-days: 90
+
+      - name: Email the report
+        if: env.SMTP_USERNAME != '' && env.REPORT_EMAIL != ''
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ vars.SMTP_SERVER || 'smtp.gmail.com' }}
+          server_port: ${{ vars.SMTP_PORT || 465 }}
+          secure: true
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: QA Monster <${{ secrets.SMTP_USERNAME }}>
+          to: ${{ vars.REPORT_EMAIL }}
+          subject: "${{ steps.build.outputs.blocking != '0' && '⚠️' || '✅' }} QA Monster — ${{ steps.build.outputs.blocking }} ממצאים חוסמים · ${{ steps.build.outputs.grades }}"
+          html_body: file://reports/report.html
+          attachments: reports/report.html
+          convert_markdown: false
+
+      - name: Slack alert
+        if: env.SLACK_WEBHOOK_URL != '' && steps.build.outputs.blocking != '0'
+        run: |
+          jq -n --arg t "⚠️ QA Monster: ${{ steps.build.outputs.blocking }} blocking findings — ${{ steps.build.outputs.grades }} — ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" '{text:$t}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Open / update / close the tracking issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync('reports/summary.md', 'utf8');
+            const blocking = Number('${{ steps.build.outputs.blocking }}');
+            const label = 'qa-monster';
+            await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'b60205' }).catch(() => {});
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, labels: label, state: 'open' });
+            const issue = open[0];
+            if (blocking > 0) {
+              const title = `🛡️ QA Monster: ${blocking} ממצאים חוסמים`;
+              if (issue) {
+                await github.rest.issues.update({ ...context.repo, issue_number: issue.number, title, body });
+                await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `ריצה חדשה: ${blocking} ממצאים חוסמים — ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}` });
+              } else {
+                await github.rest.issues.create({ ...context.repo, title, body, labels: [label] });
+              }
+            } else if (issue) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: '✅ כל הממצאים החוסמים נפתרו. סוגר.' });
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: 'closed', state_reason: 'completed' });
+            }
+
+      - name: Fail on blocking findings
+        if: steps.build.outputs.blocking != '0'
+        run: |
+          echo "::error::${{ steps.build.outputs.blocking }} blocking finding(s) at or above $FAIL_ON — see the qa-monster-report artifact"
+          exit 1

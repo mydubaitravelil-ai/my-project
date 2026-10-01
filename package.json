@@ -1,0 +1,32 @@
+{
+  "name": "qa-monster",
+  "version": "1.0.0",
+  "description": "Automated QA + security audit bot for mydubai-travel.com and thailand-express.com",
+  "scripts": {
+    "audit": "playwright test || true",
+    "report": "node scripts/build-report.mjs",
+    "audit:full": "playwright test; node scripts/build-report.mjs --fail",
+    "audit:security": "playwright test tests/security || true",
+    "audit:qa": "playwright test tests/qa tests/flows || true",
+    "typecheck": "tsc -p .",
+    "show-report": "playwright show-report"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mydubaitravelil-ai/my-project.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/mydubaitravelil-ai/my-project/issues"
+  },
+  "homepage": "https://github.com/mydubaitravelil-ai/my-project#readme",
+  "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
+    "@playwright/test": "1.56",
+    "@types/node": "^26.6.3",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
