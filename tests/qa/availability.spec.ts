@@ -2,7 +2,7 @@ import { test } from '../../lib/fixtures';
 import { absolute } from '../../lib/site';
 import { sameSite } from '../../lib/pages';
 
-test('critical pages load cleanly', async ({ page, site, findings }) => {
+test('critical pages load cleanly', async ({ page, site, findings, log }) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   const badResponses: Array<{ url: string; status: number }> = [];
@@ -31,11 +31,13 @@ test('critical pages load cleanly', async ({ page, site, findings }) => {
       }
       const elapsed = Date.now() - started;
       const status = res?.status() ?? 0;
+      log.metric('loadMs', elapsed, { unit: 'ms', url, budget: site.budgets.loadMs });
+      log.metric('httpStatus', status, { url });
       if (status >= 500) findings.critical(`Server error ${status}`, { url, fix: 'Inspect server/application logs for the failing request.' });
       else if (status >= 400) findings.high(`Critical page returns ${status}`, { url, fix: 'Restore the page or update the critical path list in sites.json.' });
 
-      if (elapsed > site.budgets.loadMs * 2) findings.high(`Very slow load: ${elapsed} ms`, { url, detail: `Budget ${site.budgets.loadMs} ms` });
-      else if (elapsed > site.budgets.loadMs) findings.medium(`Slow load: ${elapsed} ms`, { url, detail: `Budget ${site.budgets.loadMs} ms` });
+      if (elapsed > site.budgets.loadMs * 2) findings.high(`Very slow load: ${elapsed} ms`, { url, detail: `Budget ${site.budgets.loadMs} ms`, key: 'slow-load' });
+      else if (elapsed > site.budgets.loadMs) findings.medium(`Slow load: ${elapsed} ms`, { url, detail: `Budget ${site.budgets.loadMs} ms`, key: 'slow-load' });
 
       await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
 
@@ -68,7 +70,7 @@ test('critical pages load cleanly', async ({ page, site, findings }) => {
   }
 });
 
-test('home page responds over plain HTTP request', async ({ request, site, findings }) => {
+test('home page responds over plain HTTP request', async ({ request, site, findings, log }) => {
   const times: number[] = [];
   for (let i = 0; i < 3; i++) {
     const t = Date.now();
@@ -78,6 +80,7 @@ test('home page responds over plain HTTP request', async ({ request, site, findi
     if (!res.ok()) return findings.critical(`Home page returns ${res.status()}`, { url: site.baseUrl });
   }
   const median = times.sort((a, b) => a - b)[1];
+  log.metric('serverResponseMs', median, { unit: 'ms', url: site.baseUrl, budget: site.budgets.ttfbMs * 2 });
   if (median > site.budgets.ttfbMs * 2) findings.medium(`Slow server response: median ${median} ms over 3 requests`, {
     url: site.baseUrl,
     fix: 'Enable full-page caching / CDN, check slow DB queries and server resources.',

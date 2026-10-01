@@ -4,7 +4,7 @@ import { auditPages } from '../../lib/pages';
 test.setTimeout(10 * 60_000);
 
 // Read-only inspection: forms are NEVER submitted against the live sites.
-test('forms are well-formed and safe (no submission)', async ({ page, request, site, findings }) => {
+test('forms are well-formed and safe (no submission)', async ({ page, request, site, findings, log }) => {
   for (const url of await auditPages(request, site)) {
     await test.step(url, async () => {
       const res = await page.goto(url, { waitUntil: 'load', timeout: 45_000 }).catch(() => null);
@@ -32,6 +32,7 @@ test('forms are well-formed and safe (no submission)', async ({ page, request, s
           submitButtons: f.querySelectorAll('button, input[type=submit]').length,
         };
       }));
+      log.metric('forms', forms.length, { url });
       for (const f of forms) {
         const where = `${f.id} on ${url}`;
         if (f.action.startsWith('http://')) findings.critical('Form submits over unencrypted HTTP', { url, detail: `${where} → ${f.action}`, fix: 'Change the form action to https://.' });

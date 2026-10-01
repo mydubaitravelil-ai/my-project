@@ -12,17 +12,18 @@ function tlsProbe(host: string, opts: tls.ConnectionOptions = {}): Promise<{ cer
   });
 }
 
-test('TLS certificate and protocol', async ({ site, findings }) => {
+test('TLS certificate and protocol', async ({ site, findings, log }) => {
   const host = new URL(site.baseUrl).hostname;
   const r = await tlsProbe(host);
-  if (!r.cert?.valid_to) return findings.critical('Could not establish a TLS connection', { url: site.baseUrl, detail: r.error });
+  if (!r.cert?.valid_to) return findings.critical('Could not establish a TLS connection', { url: site.baseUrl, detail: r.error, key: 'tls-connect' });
 
-  if (!r.authorized) findings.critical('TLS certificate is not trusted', { url: site.baseUrl, detail: r.error, fix: 'Install a valid certificate chain (e.g. Let\'s Encrypt / Cloudflare) including intermediates.' });
+  if (!r.authorized) findings.critical('TLS certificate is not trusted', { url: site.baseUrl, detail: r.error, key: 'tls-untrusted', fix: 'Install a valid certificate chain (e.g. Let\'s Encrypt / Cloudflare) including intermediates.' });
   const days = Math.floor((new Date(r.cert.valid_to).getTime() - Date.now()) / 86_400_000);
+  log.metric('certDaysLeft', days, { unit: 'days', url: site.baseUrl });
   if (days < 0) findings.critical(`TLS certificate EXPIRED ${-days} days ago`, { url: site.baseUrl });
-  else if (days < 14) findings.high(`TLS certificate expires in ${days} days`, { url: site.baseUrl, fix: 'Renew now and verify auto-renewal works.' });
-  else if (days < 30) findings.medium(`TLS certificate expires in ${days} days`, { url: site.baseUrl });
-  findings.info(`Certificate: ${r.cert.subject?.CN} by ${r.cert.issuer?.O ?? r.cert.issuer?.CN}, valid until ${r.cert.valid_to} (${days} days), ${r.protocol}`);
+  else if (days < 14) findings.high(`TLS certificate expires in ${days} days`, { url: site.baseUrl, fix: 'Renew now and verify auto-renewal works.', key: 'cert-expiry' });
+  else if (days < 30) findings.medium(`TLS certificate expires in ${days} days`, { url: site.baseUrl, key: 'cert-expiry' });
+  findings.info(`Certificate: ${r.cert.subject?.CN} by ${r.cert.issuer?.O ?? r.cert.issuer?.CN}, valid until ${r.cert.valid_to} (${days} days), ${r.protocol}`, { key: 'cert-info' });
 
   for (const v of ['TLSv1', 'TLSv1.1'] as const) {
     const old = await tlsProbe(host, { minVersion: v, maxVersion: v, ciphers: 'DEFAULT@SECLEVEL=0' });

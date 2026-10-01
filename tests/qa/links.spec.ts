@@ -11,7 +11,7 @@ async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>
   }));
 }
 
-test('crawl internal pages and verify links', async ({ request, site, findings }) => {
+test('crawl internal pages and verify links', async ({ request, site, findings, log }) => {
   const visited = new Map<string, number>();
   const referrer = new Map<string, string>();
   const external = new Map<string, string>();
@@ -28,10 +28,11 @@ test('crawl internal pages and verify links', async ({ request, site, findings }
       const status = res?.status() ?? 0;
       visited.set(url, status);
       const from = referrer.get(url);
-      if (!res) return findings.high('Internal page unreachable', { url, detail: from && `Linked from ${from}` });
-      if (status >= 500) return findings.high(`Internal page returns ${status}`, { url, detail: from && `Linked from ${from}` });
+      // Keyed by target URL: the referrer found first can differ between runs.
+      if (!res) return findings.high('Internal page unreachable', { url, detail: from && `Linked from ${from}`, key: `unreachable|${url}` });
+      if (status >= 500) return findings.high(`Internal page returns ${status}`, { url, detail: from && `Linked from ${from}`, key: `5xx|${url}` });
       if (status >= 400) return findings.high(`Broken internal link (${status})`, {
-        url, detail: from && `Linked from ${from}`, fix: 'Fix or remove the link, or add a 301 redirect to the new location.',
+        url, detail: from && `Linked from ${from}`, key: `broken|${url}`, fix: 'Fix or remove the link, or add a 301 redirect to the new location.',
       });
       if (!sameSite(site, res.url())) return;
       if (!(res.headers()['content-type'] ?? '').includes('text/html')) return;
@@ -46,13 +47,16 @@ test('crawl internal pages and verify links', async ({ request, site, findings }
     frontier = [...new Set(next)];
   }
 
-  findings.info(`Crawled ${visited.size} internal pages`, { detail: `${external.size} external links, ${assets.size} own assets discovered` });
+  log.metric('pagesCrawled', visited.size, { url: site.baseUrl });
+  log.metric('externalLinks', external.size, { url: site.baseUrl });
+  log.metric('ownAssets', assets.size, { url: site.baseUrl });
+  log.info(`Crawled ${visited.size} internal pages; ${external.size} external links, ${assets.size} own assets`);
 
   await pool([...assets.entries()].slice(0, 200), 6, async ([url, from]) => {
     const res = await request.head(url, { timeout: 20_000 }).catch(() => null);
     const status = res?.status() ?? 0;
     if (status === 405 || status === 0) return; // some servers reject HEAD
-    if (status >= 400) findings.medium(`Broken asset (${status})`, { url, detail: `Referenced from ${from}` });
+    if (status >= 400) findings.medium(`Broken asset (${status})`, { url, detail: `Referenced from ${from}`, key: `asset|${url}` });
   });
 
   await pool([...external.entries()].slice(0, site.maxExternalLinks), 6, async ([url, from]) => {
@@ -61,7 +65,7 @@ test('crawl internal pages and verify links', async ({ request, site, findings }
     const status = res?.status() ?? 0;
     // 401/403/429/999 usually mean the remote blocks bots, not that the link is dead.
     if ([401, 403, 429, 999].includes(status)) return;
-    if (!res) findings.low('External link unreachable', { url, detail: `Linked from ${from}` });
-    else if (status >= 400) findings.low(`Broken external link (${status})`, { url, detail: `Linked from ${from}` });
+    if (!res) findings.low('External link unreachable', { url, detail: `Linked from ${from}`, key: `external|${url}` });
+    else if (status >= 400) findings.low(`Broken external link (${status})`, { url, detail: `Linked from ${from}`, key: `external|${url}` });
   });
 });

@@ -15,6 +15,8 @@ export interface Budgets {
 export interface Site {
   name: string;
   baseUrl: string;
+  /** Optional staging copy of the site; the only remote target an active (full) ZAP scan may hit. */
+  stagingUrl?: string | null;
   criticalPaths: string[];
   maxCrawlPages: number;
   maxExternalLinks: number;

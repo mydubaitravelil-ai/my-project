@@ -1,6 +1,9 @@
 import { defineConfig, devices } from '@playwright/test';
+import { ensureRunId } from './lib/logger.cjs';
 import { loadSites } from './lib/site';
 
+// One run id for the whole process tree; every event of this run goes to runs/<runId>/events.jsonl.
+ensureRunId();
 const sites = loadSites();
 
 export default defineConfig({
@@ -9,10 +12,13 @@ export default defineConfig({
   fullyParallel: true,
   workers: process.env.CI ? 4 : 2,
   retries: 0,
+  // Run lifecycle events come from global setup/teardown and the auto `findings` fixture, so they are
+  // recorded whatever --reporter is used.
+  globalSetup: './lib/global-setup.ts',
+  globalTeardown: './lib/global-teardown.ts',
   reporter: [
     ['list'],
     ['html', { open: 'never', outputFolder: 'playwright-report' }],
-    ['json', { outputFile: 'reports/playwright-results.json' }],
   ],
   use: {
     ...devices['Desktop Chrome'],
@@ -28,7 +34,10 @@ export default defineConfig({
     name: site.name,
     metadata: { site },
     use: { baseURL: site.baseUrl },
-    // Site-specific user-flow specs live in tests/flows/<site-name>/ and only run for that site.
-    testIgnore: sites.filter((s) => s.name !== site.name).map((s) => `**/flows/${s.name}/**`),
+    testIgnore: [
+      '**/unit/**', // node:test unit tests (npm run test:unit)
+      // Site-specific user-flow specs live in tests/flows/<site-name>/ and only run for that site.
+      new RegExp(`[\\\\/]flows[\\\\/](?!${site.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\\\/])`),
+    ],
   })),
 });

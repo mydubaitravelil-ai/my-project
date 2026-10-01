@@ -3,12 +3,18 @@
     {
       "name": "mydubai-travel",
       "baseUrl": "https://mydubai-travel.com",
-      "criticalPaths": ["/"]
+      "stagingUrl": null,
+      "criticalPaths": [
+        "/"
+      ]
     },
     {
       "name": "thailand-express",
       "baseUrl": "https://thailand-express.com",
-      "criticalPaths": ["/"]
+      "stagingUrl": null,
+      "criticalPaths": [
+        "/"
+      ]
     }
   ],
   "defaults": {

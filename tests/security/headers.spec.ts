@@ -30,7 +30,7 @@ test('security headers', async ({ request, site, findings }) => {
     findings[probe.headers()['access-control-allow-credentials'] === 'true' ? 'high' : 'medium']('CORS reflects arbitrary Origin', { url, fix: 'Allow-list specific origins only.' });
 });
 
-test('cookies, mixed content and third-party scripts', async ({ page, context, site, findings }) => {
+test('cookies, mixed content and third-party scripts', async ({ page, context, site, findings, log }) => {
   const insecure: string[] = [];
   page.on('request', (r) => r.url().startsWith('http://') && insecure.push(r.url()));
   await page.goto(site.baseUrl + '/', { waitUntil: 'load', timeout: 45_000 });
@@ -50,9 +50,10 @@ test('cookies, mixed content and third-party scripts', async ({ page, context, s
   const scripts = await page.$$eval('script[src]', (s) => s.map((e) => ({ src: (e as HTMLScriptElement).src, sri: !!e.getAttribute('integrity') })));
   const thirdParty = scripts.filter((s) => !new URL(s.src).hostname.endsWith(host));
   const domains = [...new Set(thirdParty.map((s) => new URL(s.src).hostname))];
-  if (domains.length) findings.info(`${domains.length} third-party script domain(s)`, { url: site.baseUrl, detail: domains.join('\n') });
+  log.metric('thirdPartyScriptDomains', domains.length, { url: site.baseUrl });
+  if (domains.length) findings.info(`${domains.length} third-party script domain(s)`, { url: site.baseUrl, detail: domains.join('\n'), key: 'third-party-domains' });
   const cdnNoSri = thirdParty.filter((s) => !s.sri && /cdn|unpkg|jsdelivr|cdnjs|bootstrapcdn|jquery/i.test(s.src));
-  if (cdnNoSri.length) findings.low('CDN scripts loaded without Subresource Integrity', { url: site.baseUrl, detail: cdnNoSri.map((s) => s.src).join('\n') });
+  if (cdnNoSri.length) findings.low('CDN scripts loaded without Subresource Integrity', { url: site.baseUrl, detail: cdnNoSri.map((s) => s.src).join('\n'), key: 'cdn-no-sri' });
 
   const libs = await page.evaluate(() => ({
     jquery: (window as any).jQuery?.fn?.jquery as string | undefined,
@@ -64,7 +65,8 @@ test('cookies, mixed content and third-party scripts', async ({ page, context, s
 });
 
 test('error pages do not leak internals', async ({ request, site, findings }) => {
-  const missing = absolute(site, `/qa-monster-${Date.now()}-does-not-exist`);
+  // Fixed path (not a timestamp) so the finding keeps the same identity from run to run.
+  const missing = absolute(site, '/qa-monster-404-probe-7f3a9c');
   const res = await request.get(missing, { timeout: 20_000 });
   if (res.status() === 200) findings.low('Unknown URLs return 200 instead of 404 (soft-404)', { url: missing, fix: 'Return a real 404 status for missing pages.' });
   const body = await res.text();

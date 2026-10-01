@@ -9,7 +9,7 @@ const VIEWPORTS = [
 
 test.setTimeout(5 * 60_000);
 
-test('responsive layout on mobile / tablet / desktop', async ({ page, site, findings }, testInfo) => {
+test('responsive layout on mobile / tablet / desktop', async ({ page, site, findings, log }, testInfo) => {
   for (const vp of VIEWPORTS) {
     await page.setViewportSize(vp);
     for (const p of site.criticalPaths) {
@@ -31,15 +31,18 @@ test('responsive layout on mobile / tablet / desktop', async ({ page, site, find
             .filter((el) => { const b = el.getBoundingClientRect(); return el.offsetParent && b.width > 0 && (b.width < 24 || b.height < 24); }).length;
           return { overflow, culprits, tiny, smallTargets };
         });
+        log.metric(`overflowPx.${vp.name}`, Math.max(0, r.overflow), { unit: 'px', url });
         if (r.overflow > 2) findings.add(vp.name === 'mobile' ? 'medium' : 'low', `Horizontal scroll on ${vp.name} (${r.overflow}px wider than screen)`, {
-          url, detail: r.culprits.join('\n'), fix: 'Find the element with fixed width; use max-width:100% / flex-wrap / overflow-wrap.',
+          url, detail: r.culprits.join('\n'), key: `overflow|${vp.name}|${url}`, fix: 'Find the element with fixed width; use max-width:100% / flex-wrap / overflow-wrap.',
         });
         if (vp.name === 'mobile' && r.tiny > 5) findings.low(`${r.tiny} text elements under 12px on mobile`, { url });
         if (vp.name === 'mobile' && r.smallTargets > 5) findings.low(`${r.smallTargets} tap targets smaller than 24px on mobile`, { url });
-        await testInfo.attach(`${vp.name}-${p.replace(/\W+/g, '_') || 'home'}.png`, {
-          body: await page.screenshot({ fullPage: true, timeout: 30_000 }).catch(() => Buffer.alloc(0)),
-          contentType: 'image/png',
-        });
+        const shot = await page.screenshot({ fullPage: true, timeout: 30_000 }).catch(() => null);
+        if (shot) {
+          const name = `${vp.name}-${p.replace(/\W+/g, '_').replace(/^_+|_+$/g, '') || 'home'}.png`;
+          await testInfo.attach(name, { body: shot, contentType: 'image/png' });
+          log.saveArtifact('screenshot', `${site.name}/${name}`, shot, { label: `${vp.name} ${vp.width}×${vp.height}`, url });
+        }
       });
     }
   }

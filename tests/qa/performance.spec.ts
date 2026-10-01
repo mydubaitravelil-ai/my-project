@@ -4,7 +4,7 @@ import { sameSite } from '../../lib/pages';
 
 test.setTimeout(5 * 60_000);
 
-test('Core Web Vitals & page weight', async ({ page, site, findings }) => {
+test('Core Web Vitals & page weight', async ({ page, site, findings, log }) => {
   await page.addInitScript(() => {
     (window as any).__vitals = { lcp: 0, cls: 0 };
     new PerformanceObserver((l) => {
@@ -37,7 +37,13 @@ test('Core Web Vitals & page weight', async ({ page, site, findings }) => {
       page.off('response', onResponse);
 
       const fmt = (n: number) => Math.round(n);
-      findings.info(`Metrics: TTFB ${fmt(m.ttfb)} ms · FCP ${fmt(m.fcp)} ms · LCP ${fmt(m.lcp)} ms · CLS ${m.cls.toFixed(3)} · ${responses.length} requests`, { url });
+      const totalKb = responses.reduce((s, r) => s + r.size, 0) / 1024;
+      log.metric('ttfb', m.ttfb, { unit: 'ms', url, budget: b.ttfbMs });
+      log.metric('fcp', m.fcp, { unit: 'ms', url, budget: b.fcpMs });
+      log.metric('lcp', m.lcp, { unit: 'ms', url, budget: b.lcpMs });
+      log.metric('cls', m.cls, { url, budget: b.cls });
+      log.metric('requests', responses.length, { url, budget: b.requestCount });
+      log.metric('pageWeightKb', totalKb, { unit: 'KB', url, budget: b.pageWeightKb });
       const budget = (val: number, max: number, name: string, fix: string) => {
         if (val > max * 1.6) findings.medium(`${name} ${fmt(val)} ms (budget ${max} ms)`, { url, fix });
         else if (val > max) findings.low(`${name} ${fmt(val)} ms (budget ${max} ms)`, { url, fix });
@@ -48,7 +54,6 @@ test('Core Web Vitals & page weight', async ({ page, site, findings }) => {
       if (m.cls > b.cls * 2.5) findings.medium(`High layout shift CLS ${m.cls.toFixed(3)}`, { url, fix: 'Set width/height on images, reserve space for banners/embeds.' });
       else if (m.cls > b.cls) findings.low(`Layout shift CLS ${m.cls.toFixed(3)} (budget ${b.cls})`, { url });
 
-      const totalKb = responses.reduce((s, r) => s + r.size, 0) / 1024;
       if (totalKb > b.pageWeightKb) findings.medium(`Heavy page: ${Math.round(totalKb)} KB (budget ${b.pageWeightKb} KB)`, { url });
       if (responses.length > b.requestCount) findings.low(`${responses.length} requests (budget ${b.requestCount})`, { url });
 
@@ -61,7 +66,7 @@ test('Core Web Vitals & page weight', async ({ page, site, findings }) => {
         sameSite(site, r.url) && ['script', 'stylesheet', 'image', 'font'].includes(r.type) &&
         !/max-age=\d{4,}|immutable/.test(r.headers['cache-control'] ?? ''));
       if (uncachedStatic.length) findings.low(`${uncachedStatic.length} static asset(s) without long cache headers`, {
-        url, detail: uncachedStatic.slice(0, 8).map((r) => r.url).join('\n'), fix: 'Cache-Control: public, max-age=31536000, immutable for fingerprinted assets.',
+        url, detail: uncachedStatic.slice(0, 8).map((r) => r.url).join('\n'), key: `uncached-static|${url}`, fix: 'Cache-Control: public, max-age=31536000, immutable for fingerprinted assets.',
       });
     });
   }

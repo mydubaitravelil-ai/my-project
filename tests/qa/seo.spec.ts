@@ -4,9 +4,11 @@ import { auditPages } from '../../lib/pages';
 
 test.setTimeout(10 * 60_000);
 
-test('on-page SEO essentials', async ({ page, request, site, findings }) => {
+test('on-page SEO essentials', async ({ page, request, site, findings, log }) => {
   const titles = new Map<string, string[]>();
-  for (const url of await auditPages(request, site)) {
+  const pages = await auditPages(request, site);
+  log.metric('pagesAudited', pages.length, { url: site.baseUrl });
+  for (const url of pages) {
     await test.step(url, async () => {
       const res = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 45_000 }).catch(() => null);
       if (!res || !res.ok()) return;
@@ -32,7 +34,7 @@ test('on-page SEO essentials', async ({ page, request, site, findings }) => {
       if (d.robots.includes('noindex') || xRobots.includes('noindex'))
         findings.high('Page is set to noindex — hidden from Google', { url, fix: 'Remove noindex from production pages that should rank.' });
       if (!d.title) findings.medium('Missing <title>', { url });
-      else if (d.title.length < 10 || d.title.length > 70) findings.low(`Title length ${d.title.length} chars (ideal 10–70)`, { url, detail: d.title });
+      else if (d.title.length < 10 || d.title.length > 70) findings.low(`Title length ${d.title.length} chars (ideal 10–70)`, { url, detail: d.title, key: `title-length|${url}` });
       if (!d.description) findings.medium('Missing meta description', { url, fix: 'Add a unique 70–160 character description that sells the page.' });
       else if (d.description.length < 50 || d.description.length > 170) findings.low(`Meta description length ${d.description.length} chars (ideal 50–160)`, { url });
       if (!d.viewport) findings.high('Missing viewport meta — page is not mobile-friendly', { url, fix: '<meta name="viewport" content="width=device-width, initial-scale=1">' });
@@ -41,7 +43,7 @@ test('on-page SEO essentials', async ({ page, request, site, findings }) => {
       if (!d.lang) findings.low('Missing <html lang> attribute', { url, fix: 'e.g. <html lang="he" dir="rtl"> or <html lang="en">' });
       if (!d.canonical) findings.low('Missing canonical link', { url });
       if (!d.ogTitle || !d.ogImage) findings.low('Missing Open Graph tags (og:title / og:image) — poor link previews on WhatsApp/Facebook', { url });
-      if (d.imgNoAlt.length) findings.low(`${d.imgNoAlt.length} image(s) without alt text`, { url, detail: d.imgNoAlt.join('\n') });
+      if (d.imgNoAlt.length) findings.low(`${d.imgNoAlt.length} image(s) without alt text`, { url, detail: d.imgNoAlt.join('\n'), key: `img-no-alt|${url}` });
       if (!d.structuredData) findings.info('No structured data (JSON-LD)', { url, fix: 'Consider TravelAgency / Organization / Product schema for rich results.' });
       if (d.title) titles.set(d.title, [...(titles.get(d.title) ?? []), url]);
     });

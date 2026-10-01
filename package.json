@@ -3,11 +3,14 @@
   "version": "1.0.0",
   "description": "Automated QA + security audit bot for mydubai-travel.com and thailand-express.com",
   "scripts": {
-    "audit": "playwright test || true",
+    "audit": "node scripts/audit.mjs",
+    "audit:qa": "node scripts/audit.mjs tests/qa tests/flows",
+    "audit:security": "node scripts/audit.mjs tests/security",
     "report": "node scripts/build-report.mjs",
-    "audit:full": "playwright test; node scripts/build-report.mjs --fail",
-    "audit:security": "playwright test tests/security || true",
-    "audit:qa": "playwright test tests/qa tests/flows || true",
+    "dashboard": "node scripts/dashboard.mjs",
+    "sync": "node scripts/sync-github.mjs",
+    "zap": "node scripts/zap.mjs",
+    "test:unit": "node --test \"tests/unit/*.test.mjs\"",
     "typecheck": "tsc -p .",
     "show-report": "playwright show-report"
   },
@@ -28,5 +31,8 @@
     "@types/node": "^26.6.3",
     "typescript": "^7.0.2"
   },
-  "private": true
+  "private": true,
+  "engines": {
+    "node": ">=20.12"
+  }
 }
