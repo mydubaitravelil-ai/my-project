@@ -18,9 +18,9 @@
     }
   ],
   "defaults": {
-    "maxCrawlPages": 60,
-    "maxExternalLinks": 80,
-    "auditPages": 8,
+    "maxCrawlPages": 250,
+    "maxExternalLinks": 200,
+    "auditPages": 40,
     "budgets": {
       "loadMs": 5000,
       "ttfbMs": 800,
