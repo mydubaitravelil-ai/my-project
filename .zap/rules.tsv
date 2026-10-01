@@ -1,0 +1,5 @@
+# OWASP ZAP rule overrides: <rule id>	<IGNORE|WARN|FAIL>	<comment>
+# Overlapping checks are already graded by tests/security/headers.spec.ts; keep them as WARN so they show but do not duplicate failures.
+10015	IGNORE	(Incomplete or No Cache-control Header Set) — covered by performance spec
+10049	IGNORE	(Non-Storable / Storable Content) — informational noise
+10109	IGNORE	(Modern Web Application) — informational

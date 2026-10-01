@@ -1,0 +1,259 @@
+name: QA Monster — site audit
+
+on:
+  schedule:
+    - cron: '17 3 * * *' # daily 03:17 UTC = 06:17 Israel summer time (05:17 in winter)
+  workflow_dispatch:
+    inputs:
+      zap_mode:
+        description: 'OWASP ZAP: baseline = passive scan of the live sites. full = ACTIVE scan, only against stagingUrl entries in sites.json (never production). none = skip.'
+        type: choice
+        options: [baseline, full, none]
+        default: baseline
+      site:
+        description: 'Only this site (name from sites.json); empty = all'
+        required: false
+        default: ''
+      fail_on:
+        description: 'Minimum severity that fails the run'
+        type: choice
+        options: [critical, high, medium, low]
+        default: high
+
+permissions:
+  contents: read
+  issues: write
+  actions: read # download the previous run's events for the new-vs-resolved comparison
+
+concurrency:
+  group: qa-monster
+  cancel-in-progress: false
+
+env:
+  # Every job writes events for the same run; the report job merges them into one events.jsonl.
+  QA_RUN_ID: gh-${{ github.run_id }}-${{ github.run_attempt }}
+  QA_RUN_SOURCE: github
+  QA_EXPECT: qa,security
+  FAIL_ON: ${{ inputs.fail_on || 'high' }}
+  SITE: ${{ inputs.site }}
+  ZAP_MODE: ${{ inputs.zap_mode || 'baseline' }}
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      zap_targets: ${{ steps.zap.outputs.targets }}
+      zap_count: ${{ steps.zap.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - id: zap
+        name: Resolve ZAP targets (policy in scripts/lib/zap-policy.mjs)
+        run: |
+          targets=$(node scripts/zap-targets.mjs --mode "$ZAP_MODE" --site "$SITE")
+          count=$(echo "$targets" | jq length)
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$ZAP_MODE" = full ] && [ "$count" = 0 ]; then
+            echo "::warning::zap_mode=full, but no site has a stagingUrl in sites.json. Active scans never run against production, so ZAP is skipped."
+          fi
+
+  playwright:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Run QA + security checks
+        run: npx playwright test
+        continue-on-error: true # the report job decides pass/fail from the events
+      - name: Upload events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: events-playwright
+          path: runs/${{ env.QA_RUN_ID }}/
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Upload Playwright report (traces, screenshots)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  zap:
+    needs: setup
+    if: needs.setup.outputs.zap_count != '' && needs.setup.outputs.zap_count != '0'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.setup.outputs.zap_targets) }}
+    env:
+      TARGET_NAME: ${{ matrix.target.name }}
+      TARGET_URL: ${{ matrix.target.url }}
+      TARGET_MODE: ${{ matrix.target.mode }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Policy guard (live sites = passive only)
+        run: node scripts/zap-targets.mjs --assert --mode "$TARGET_MODE" --url "$TARGET_URL"
+      - name: ZAP baseline scan (passive)
+        if: matrix.target.mode == 'baseline'
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: ${{ matrix.target.url }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a -j -m 5'
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: zap-report-${{ matrix.target.name }}
+      - name: ZAP full scan (ACTIVE, staging only)
+        if: matrix.target.mode == 'full'
+        uses: zaproxy/action-full-scan@v0.12.0
+        with:
+          target: ${{ matrix.target.url }}
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a -j -m 10'
+          allow_issue_writing: false
+          fail_action: false
+          artifact_name: zap-report-${{ matrix.target.name }}
+      - name: Record ZAP results as events
+        if: always()
+        run: |
+          node scripts/ingest-zap.mjs --site "$TARGET_NAME" --mode "$TARGET_MODE" --target "$TARGET_URL" \
+            --report report_json.json --out "zap-events/$TARGET_NAME.jsonl"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: events-zap-${{ matrix.target.name }}
+          path: zap-events/
+          retention-days: 7
+
+  report:
+    needs: [setup, playwright, zap]
+    if: always()
+    runs-on: ubuntu-latest
+    env:
+      # SMTP settings live only in GitHub Secrets; the email step is skipped until all are set.
+      HAS_SMTP: ${{ secrets.SMTP_SERVER != '' && secrets.SMTP_PORT != '' && secrets.SMTP_USERNAME != '' && secrets.SMTP_PASSWORD != '' && secrets.REPORT_EMAIL != '' }}
+      HAS_SLACK: ${{ secrets.SLACK_WEBHOOK_URL != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download Playwright events
+        uses: actions/download-artifact@v4
+        with:
+          name: events-playwright
+          path: runs/${{ env.QA_RUN_ID }}
+        continue-on-error: true
+      - name: Download ZAP events
+        uses: actions/download-artifact@v4
+        with:
+          pattern: events-zap-*
+          path: zap-events
+          merge-multiple: true
+        continue-on-error: true
+      - name: Merge into one events.jsonl
+        run: node scripts/merge-events.mjs "runs/$QA_RUN_ID/events.jsonl" zap-events/*.jsonl
+
+      - name: Fetch the previous run (baseline for new vs resolved)
+        run: node scripts/sync-github.mjs --limit 1 --exclude-run "$GITHUB_RUN_ID" --branch "$GITHUB_REF_NAME"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        continue-on-error: true
+
+      - name: Finalize the run and build the report
+        id: build
+        run: |
+          node scripts/build-report.mjs --run "$QA_RUN_ID"
+          s="runs/$QA_RUN_ID/summary.json"
+          echo "blocking=$(jq .blocking "$s")" >> "$GITHUB_OUTPUT"
+          echo "grades=$(jq -r '[.sites[] | "\(.name): אבטחה \(.securityGrade) · QA \(.qaGrade)"] | join(" | ")' "$s")" >> "$GITHUB_OUTPUT"
+          echo "changes=$(jq -r 'if .baselineRunId then "\(.newCount) חדשים, \(.resolvedCount) נפתרו" else "ריצה ראשונה להשוואה" end' "$s")" >> "$GITHUB_OUTPUT"
+
+      # events.jsonl + report.html + screenshots: open it in the dashboard (npm run dashboard → "סנכרון מ-GitHub").
+      - name: Upload qa-monster-events
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-monster-events
+          path: runs/${{ env.QA_RUN_ID }}/
+          retention-days: 90
+
+      - name: Email the report
+        if: env.HAS_SMTP == 'true'
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          secure: ${{ secrets.SMTP_PORT == '465' }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          from: ${{ secrets.SMTP_FROM || format('QA Monster <{0}>', secrets.SMTP_USERNAME) }}
+          to: ${{ secrets.REPORT_EMAIL }}
+          subject: "${{ steps.build.outputs.blocking != '0' && '⚠️' || '✅' }} QA Monster: ${{ steps.build.outputs.blocking }} ממצאים חוסמים · ${{ steps.build.outputs.changes }} · ${{ steps.build.outputs.grades }}"
+          html_body: file://runs/${{ env.QA_RUN_ID }}/report.html
+          attachments: runs/${{ env.QA_RUN_ID }}/report.html
+          convert_markdown: false
+
+      - name: Slack alert
+        if: env.HAS_SLACK == 'true' && steps.build.outputs.blocking != '0'
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+          TEXT: "⚠️ QA Monster: ${{ steps.build.outputs.blocking }} blocking findings (${{ steps.build.outputs.changes }}) · ${{ steps.build.outputs.grades }} · ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          jq -n --arg t "$TEXT" '{text:$t}' | curl -sS -X POST -H 'Content-Type: application/json' -d @- "$SLACK_WEBHOOK_URL"
+
+      - name: Open / update / close the tracking issue
+        if: steps.build.outcome == 'success'
+        uses: actions/github-script@v7
+        env:
+          SUMMARY_FILE: runs/${{ env.QA_RUN_ID }}/summary.md
+          BLOCKING: ${{ steps.build.outputs.blocking }}
+        with:
+          script: |
+            const fs = require('fs');
+            const body = fs.readFileSync(process.env.SUMMARY_FILE, 'utf8');
+            const blocking = Number(process.env.BLOCKING);
+            const label = 'qa-monster';
+            await github.rest.issues.createLabel({ ...context.repo, name: label, color: 'b60205' }).catch(() => {});
+            const { data: open } = await github.rest.issues.listForRepo({ ...context.repo, labels: label, state: 'open' });
+            const issue = open[0];
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            if (blocking > 0) {
+              const title = `🛡️ QA Monster: ${blocking} ממצאים חוסמים`;
+              if (issue) {
+                await github.rest.issues.update({ ...context.repo, issue_number: issue.number, title, body });
+                await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `ריצה חדשה: ${blocking} ממצאים חוסמים. ${runUrl}` });
+              } else {
+                await github.rest.issues.create({ ...context.repo, title, body, labels: [label] });
+              }
+            } else if (issue) {
+              await github.rest.issues.createComment({ ...context.repo, issue_number: issue.number, body: `✅ כל הממצאים החוסמים נפתרו. ${runUrl}` });
+              await github.rest.issues.update({ ...context.repo, issue_number: issue.number, state: 'closed', state_reason: 'completed' });
+            }
+
+      - name: Fail on blocking findings
+        if: steps.build.outputs.blocking != '0'
+        env:
+          BLOCKING: ${{ steps.build.outputs.blocking }}
+        run: |
+          echo "::error::${BLOCKING:-unknown} blocking finding(s) at or above $FAIL_ON. Details: the qa-monster-events artifact (report.html) or the dashboard."
+          exit 1
